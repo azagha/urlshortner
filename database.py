@@ -1,11 +1,15 @@
+import os
 import pymysql
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def get_db_connection():
     connection = pymysql.connect(
-        host="localhost",
-        user="root",
-        password="7orof@2005Anas", 
-        database="urlshortner",
+        host=os.getenv("DB_HOST", "localhost"),
+        user=os.getenv("DB_USER", "root"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME", "urlshortner"),
         cursorclass=pymysql.cursors.DictCursor
     )
     try:
