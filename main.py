@@ -2,12 +2,19 @@ import string
 import secrets
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pwdlib import PasswordHash
+from pwdlib.hashers.bcrypt import BcryptHasher
+
 import pymysql
 
 from models import UserCreate, UrlCreate, UrlResponse
 from database import get_db_connection
 
 app = FastAPI()
+
+password_hash = PasswordHash((BcryptHasher(),))
+security = HTTPBasic(auto_error=False)
 
 def generate_short_code(length: int = 5) -> str:
     chars = string.ascii_letters + string.digits
@@ -18,11 +25,12 @@ def generate_short_code(length: int = 5) -> str:
 def create_user(user: UserCreate, db = Depends(get_db_connection)):
     try:
         with db.cursor() as cursor:
+            hashed_password = password_hash.hash(user.password)
             sql = """
-                INSERT INTO USERS (first_name, last_name, email)
-                VALUES(%s, %s, %s)
+                INSERT INTO users(first_name, last_name, email, password)
+                VALUES(%s, %s, %s, %s)
             """
-            cursor.execute(sql, (user.first_name, user.last_name, user.email))
+            cursor.execute(sql, (user.first_name, user.last_name, user.email, hashed_password))
             db.commit()
             return {"message": "User Registered Succesfully"}
     except pymysql.MySQLError as e:
@@ -30,11 +38,37 @@ def create_user(user: UserCreate, db = Depends(get_db_connection)):
         raise HTTPException(status_code=400, detail=f"Database Error: {str(e)}")
 
 
+def authenticate_user(
+    credentials: HTTPBasicCredentials | None = Depends(security),
+    db=Depends(get_db_connection)
+) -> dict | None:
+    if credentials is None:
+        return None
+
+    with db.cursor() as cursor:
+        sql = "SELECT user_id, email, password FROM users WHERE email = %s LIMIT 1"
+        cursor.execute(sql, (credentials.username,))
+        user = cursor.fetchone()
+
+        if not user or not password_hash.verify(credentials.password, user["password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
+                headers={"WWW-Authenticate" :"Basic"}
+            )
+        return user
+
+
+
 @app.post("/shorten", status_code=status.HTTP_201_CREATED)
-def shorten_url(payload: UrlCreate, db = Depends(get_db_connection)):
+def shorten_url(payload: UrlCreate, 
+                current_user: dict | None = Depends(authenticate_user),
+                db = Depends(get_db_connection)
+):
     try:
         with db.cursor() as cursor:
-            if payload.user_id is not None:
+            user_id = current_user["user_id"] if current_user else None
+            if user_id is not None:
                 check_sql = """
                     SELECT shortened_url
                     FROM urls
@@ -42,7 +76,7 @@ def shorten_url(payload: UrlCreate, db = Depends(get_db_connection)):
                     LIMIT 1
                 """
                 cursor.execute(
-                check_sql, (payload.original_url, payload.user_id)
+                check_sql, (payload.original_url, user_id)
                 )
                 existing_record = cursor.fetchone()
 
@@ -68,7 +102,7 @@ def shorten_url(payload: UrlCreate, db = Depends(get_db_connection)):
                 VALUES (%s, %s, 0, NOW(),%s)
             """
             cursor.execute(
-                insert_sql, (payload.original_url, short_code, payload.user_id)
+                insert_sql, (payload.original_url, short_code, user_id)
             )
             db.commit()
 

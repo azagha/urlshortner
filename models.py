@@ -6,6 +6,7 @@ class UserCreate(BaseModel):
     first_name: str
     last_name: str
     email: str
+    password: str
 
 
 class UserResponse(BaseModel):
@@ -18,7 +19,6 @@ class UserResponse(BaseModel):
 
 class UrlCreate(BaseModel):
     original_url: str
-    user_id: Optional[int] = None
 
 
 class UrlResponse(BaseModel):
