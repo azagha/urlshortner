@@ -1,4 +1,5 @@
 import string
+import services
 import secrets
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
@@ -16,28 +17,6 @@ app = FastAPI()
 password_hash = PasswordHash((BcryptHasher(),))
 security = HTTPBasic(auto_error=False)
 
-def generate_short_code(length: int = 5) -> str:
-    chars = string.ascii_letters + string.digits
-    return "".join(secrets.choice(chars) for _ in range(length))
-
-
-@app.post("/users", status_code=status.HTTP_201_CREATED)
-def create_user(user: UserCreate, db = Depends(get_db_connection)):
-    try:
-        with db.cursor() as cursor:
-            hashed_password = password_hash.hash(user.password)
-            sql = """
-                INSERT INTO users(first_name, last_name, email, password)
-                VALUES(%s, %s, %s, %s)
-            """
-            cursor.execute(sql, (user.first_name, user.last_name, user.email, hashed_password))
-            db.commit()
-            return {"message": "User Registered Succesfully"}
-    except pymysql.MySQLError as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Database Error: {str(e)}")
-
-
 def authenticate_user(
     credentials: HTTPBasicCredentials | None = Depends(security),
     db=Depends(get_db_connection)
@@ -46,17 +25,31 @@ def authenticate_user(
         return None
 
     with db.cursor() as cursor:
-        sql = "SELECT user_id, email, password FROM users WHERE email = %s LIMIT 1"
-        cursor.execute(sql, (credentials.username,))
-        user = cursor.fetchone()
+        user = services.get_user_by_email(cursor, credentials.username)
 
-        if not user or not password_hash.verify(credentials.password, user["password"]):
+        if not user or not services.verify_user_password(credentials.password, user["password"]):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
                 headers={"WWW-Authenticate" :"Basic"}
             )
         return user
+
+
+@app.post("/users", status_code=status.HTTP_201_CREATED)
+def create_user(user: UserCreate, db = Depends(get_db_connection)):
+    try:
+        with db.cursor() as cursor:
+            services.create_user(
+                cursor, user.first_name, user.last_name, user.email, user.password
+            )
+            db.commit()
+            return {"message": "User Registered Succesfully"}
+    except pymysql.MySQLError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Database Error: {str(e)}")
+
+
 
 
 
@@ -69,41 +62,16 @@ def shorten_url(payload: UrlCreate,
         with db.cursor() as cursor:
             user_id = current_user["user_id"] if current_user else None
             if user_id is not None:
-                check_sql = """
-                    SELECT shortened_url
-                    FROM urls
-                    WHERE original_url = %s AND user_id = %s
-                    LIMIT 1
-                """
-                cursor.execute(
-                check_sql, (payload.original_url, user_id)
-                )
-                existing_record = cursor.fetchone()
-
+                existing_record = services.get_existing_url(cursor, payload.original_url, user_id)
                 if existing_record:
                     return {
                         "original_url": payload.original_url,
                         "shortened_url": existing_record["shortened_url"],
                     }
 
-            #new URL
-            while True:
-                short_code = generate_short_code(5)
-                cursor.execute(
-                    "SELECT 1 FROM urls WHERE shortened_url = %s LIMIT 1",
-                    (short_code,),
-                )
-                if not cursor.fetchone():
-                    break
+            
 
-
-            insert_sql = """
-                INSERT INTO urls (original_url, shortened_url, click_count, created_at, user_id)
-                VALUES (%s, %s, 0, NOW(),%s)
-            """
-            cursor.execute(
-                insert_sql, (payload.original_url, short_code, user_id)
-            )
+            short_code = services.insert_short_url(cursor, payload.original_url, user_id)
             db.commit()
 
             return {
@@ -120,36 +88,57 @@ def shorten_url(payload: UrlCreate,
 def redirect_to_url(short_code: str, db=Depends(get_db_connection)):
     try:
         with db.cursor() as cursor:
-            select_sql = """
-                SELECT original_url
-                FROM urls
-                WHERE shortened_url = %s
-                LIMIT 1
-            """
+            original_url = services.get_url_and_track_click(cursor, short_code)
 
-            cursor.execute(select_sql, (short_code,))
-            record = cursor.fetchone()
-
-            if not record:
+            if not original_url:
                 raise HTTPException(status_code=404, detail="URL not found")
 
-            update_sql = """
-                UPDATE urls
-                SET click_count = click_count + 1, last_opened = NOW()
-                WHERE shortened_url = %s
-            """
-
-            cursor.execute(update_sql, (short_code,))
             db.commit()
 
-            #adding https to the link
-            target_url = record["original_url"]
-            if not target_url.startswith(("http://", "https://")):
-                target_url = f"https://{target_url}"
+            if not original_url.startswith(("http://", "https://")):
+                original_url = f"https://{original_url}"
 
             return RedirectResponse(
-                url = target_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT
+                url = original_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT
             )
     except pymysql.MySQLError as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}" )
+
+
+@app.delete("/urls/{short_code}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_url(
+    short_code: str,
+    current_user: dict | None = Depends(authenticate_user),
+    db = Depends(get_db_connection),
+):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to delete url",
+            headers={"WWW-Authenticate": "Basic"}
+        )
+    
+    try:
+        with db.cursor() as cursor:
+            result = services.delete_url(
+                cursor, short_code, current_user["user_id"]
+            )
+
+            if result == "NOT_FOUND":
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, 
+                    detail="URL not found"
+                )
+
+            if result == "FORBIDDEN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have permission to delete this URL",
+                )
+
+            db.commit()
+            return None
+    except pymysql.MySQLError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
