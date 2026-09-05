@@ -142,3 +142,28 @@ def delete_url(
     except pymysql.MySQLError as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.get("/admin/dashboard")
+def admin_dashboard(
+    current_user: dict | None = Depends(authenticate_user),
+    db = Depends(get_db_connection),
+):
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    if not current_user.get("is_admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access requied",
+        )
+
+    try:
+        with db.cursor() as cursor:
+            return services.get_admin_dashboard(cursor)
+    except pymysql.MySQLError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

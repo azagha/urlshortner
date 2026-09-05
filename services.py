@@ -21,7 +21,7 @@ def create_user(cursor, first_name: str, last_name: str, email: str, password: s
 
 
 def get_user_by_email(cursor, email: str):
-    sql = "SELECT user_id, email, password FROM users WHERE email = %s LIMIT 1"
+    sql = "SELECT user_id, email, password, is_admin FROM users WHERE email = %s LIMIT 1"
     cursor.execute(sql, (email,))
     return cursor.fetchone()
 
@@ -104,3 +104,25 @@ def delete_url(cursor, short_code: str, user_id: int) -> str:
 
     cursor.execute(delete_sql, (short_code, user_id))
     return "DELETED"
+
+
+def get_admin_dashboard(cursor):
+    cursor.execute("SELECT COUNT(*) AS total_platform_links FROM urls")
+    total_platform_links = cursor.fetchone()["total_platform_links"]
+
+    user_stats_sql = """
+        SELECT u.user_id, u.first_name, u.last_name, u.email,
+        COUNT(l.url_id) AS total_links, CAST(COALESCE(SUM(l.click_count),0) AS SIGNED) AS total_clicks
+        FROM users u 
+        LEFT JOIN urls l ON u.user_id = l.user_id
+        GROUP BY u.user_id, u.first_name, u.last_name, u.email
+        ORDER BY total_links DESC
+    """
+
+    cursor.execute(user_stats_sql)
+    users_summary = cursor.fetchall()
+    
+    return{
+        "total platform links": total_platform_links,
+        "users": users_summary,
+    }
