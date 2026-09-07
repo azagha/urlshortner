@@ -6,15 +6,22 @@ from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
-
+from fastapi.responses import RedirectResponse
 import pymysql
 
 from models import UserCreate, UrlCreate, UrlResponse
 from database import get_db_connection
 
+from models import(
+    UserCreate,
+    UserResponse,
+    UrlCreate,
+    UrlResponse,
+    AdminDashboardResponse
+)
+from database import get_db_connection
 app = FastAPI()
 
-password_hash = PasswordHash((BcryptHasher(),))
 security = HTTPBasic(auto_error=False)
 
 def authenticate_user(
@@ -36,7 +43,7 @@ def authenticate_user(
         return user
 
 
-@app.post("/users", status_code=status.HTTP_201_CREATED)
+@app.post("/users",response_model=UserResponse ,status_code=status.HTTP_201_CREATED)
 def create_user(user: UserCreate, db = Depends(get_db_connection)):
     try:
         with db.cursor() as cursor:
@@ -44,7 +51,7 @@ def create_user(user: UserCreate, db = Depends(get_db_connection)):
                 cursor, user.first_name, user.last_name, user.email, user.password
             )
             db.commit()
-            return {"message": "User Registered Succesfully"}
+            return UserResponse(message="User registered successfully")
     except pymysql.MySQLError as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Database Error: {str(e)}")
@@ -53,7 +60,7 @@ def create_user(user: UserCreate, db = Depends(get_db_connection)):
 
 
 
-@app.post("/shorten", status_code=status.HTTP_201_CREATED)
+@app.post("/shorten",response_model=UrlResponse ,status_code=status.HTTP_201_CREATED)
 def shorten_url(payload: UrlCreate, 
                 current_user: dict | None = Depends(authenticate_user),
                 db = Depends(get_db_connection)
@@ -64,20 +71,20 @@ def shorten_url(payload: UrlCreate,
             if user_id is not None:
                 existing_record = services.get_existing_url(cursor, payload.original_url, user_id)
                 if existing_record:
-                    return {
-                        "original_url": payload.original_url,
-                        "shortened_url": existing_record["shortened_url"],
-                    }
+                    return UrlResponse(
+                        original_url= payload.original_url,
+                        shortened_url= existing_record["shortened_url"],
+                    )
 
             
 
             short_code = services.insert_short_url(cursor, payload.original_url, user_id)
             db.commit()
 
-            return {
-                "original_url": payload.original_url,
-                "shortened_url": short_code,
-            }
+            return UrlResponse(
+                original_url= payload.original_url,
+                shortened_url= short_code,
+            )
 
     except pymysql.MySQLError as e:
             db.rollback()
@@ -91,7 +98,7 @@ def redirect_to_url(short_code: str, db=Depends(get_db_connection)):
             original_url = services.get_url_and_track_click(cursor, short_code)
 
             if not original_url:
-                raise HTTPException(status_code=404, detail="URL not found")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
 
             db.commit()
 
@@ -126,10 +133,7 @@ def delete_url(
             )
 
             if result == "NOT_FOUND":
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="URL not found"
-                )
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found")
 
             if result == "FORBIDDEN":
                 raise HTTPException(
@@ -144,7 +148,7 @@ def delete_url(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-@app.get("/admin/dashboard")
+@app.get("/admin/dashboard", response_model=AdminDashboardResponse)
 def admin_dashboard(
     current_user: dict | None = Depends(authenticate_user),
     db = Depends(get_db_connection),
@@ -159,11 +163,12 @@ def admin_dashboard(
     if not current_user.get("is_admin"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access requied",
+            detail="Admin access required",
         )
 
     try:
         with db.cursor() as cursor:
-            return services.get_admin_dashboard(cursor)
+            dashboard_data = services.get_admin_dashboard(cursor)
+            return AdminDashboardResponse(**dashboard_data)
     except pymysql.MySQLError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

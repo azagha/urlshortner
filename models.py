@@ -1,4 +1,3 @@
-from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel
 
@@ -8,24 +7,25 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
-
 class UserResponse(BaseModel):
-    user_id: int
-    first_name: str
-    last_name: str
-    email: str
-
-
+    message: str
 
 class UrlCreate(BaseModel):
     original_url: str
 
-
 class UrlResponse(BaseModel):
-    url_id: int
     original_url: str
     shortened_url: str
-    click_count: int
-    last_opened: Optional[datetime] = None
-    created_at: datetime
-    user_id: Optional[int] = None
+
+
+class UserAdminStats(BaseModel):
+    user_id: int
+    first_name: str
+    last_name: str
+    email: str
+    total_links: int
+    total_clicks: int
+
+class AdminDashboardResponse(BaseModel):
+    total_platform_links: int
+    users: list[UserAdminStats]

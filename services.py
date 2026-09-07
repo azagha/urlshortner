@@ -123,6 +123,6 @@ def get_admin_dashboard(cursor):
     users_summary = cursor.fetchall()
     
     return{
-        "total platform links": total_platform_links,
+        "total_platform_links": total_platform_links,
         "users": users_summary,
     }
