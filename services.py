@@ -1,7 +1,9 @@
 import string
 import secrets
+from datetime import date, timedelta
 from pwdlib import PasswordHash
 from pwdlib.hashers.bcrypt import BcryptHasher
+
 
 password_hash = PasswordHash((BcryptHasher(),))
 
@@ -32,7 +34,7 @@ def verify_user_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_existing_url(cursor, original_url: str, user_id: int):
     sql = """
-        SELECT shortened_url
+        SELECT shortened_url, expires_at
         FROM urls
         WHERE original_url = %s AND user_id = %s
         LIMIT 1
@@ -41,7 +43,9 @@ def get_existing_url(cursor, original_url: str, user_id: int):
     return cursor.fetchone()
 
 
-def insert_short_url(cursor, original_url: str, user_id: int | None) -> str:
+def insert_short_url(
+    cursor, original_url: str, user_id: int | None, custom_expiry: date | None = None
+) -> tuple[str, date]:
     while True:
         short_code = generate_short_code(5)
         cursor.execute(
@@ -51,17 +55,22 @@ def insert_short_url(cursor, original_url: str, user_id: int | None) -> str:
         if not cursor.fetchone():
             break
 
+    if custom_expiry is not None:
+        expires_at = custom_expiry
+    else:
+        expires_at = date.today() + timedelta(days=30)
+
     insert_sql = """
-        INSERT INTO urls (original_url, shortened_url, click_count, created_at, user_id)
-        VALUES (%s, %s, 0, NOW(), %s)
+        INSERT INTO urls (original_url, shortened_url, click_count, created_at, expires_at, user_id)
+        VALUES (%s, %s, 0, NOW(), %s, %s)
     """
-    cursor.execute(insert_sql, (original_url, short_code, user_id))
-    return short_code
+    cursor.execute(insert_sql, (original_url, short_code, expires_at, user_id))
+    return short_code, expires_at
 
 
 def get_url_and_track_click(cursor, short_code: str):
     select_sql = """
-        SELECT original_url
+        SELECT original_url, expires_at
         FROM urls
         WHERE shortened_url = %s
         LIMIT 1
@@ -70,6 +79,14 @@ def get_url_and_track_click(cursor, short_code: str):
     record = cursor.fetchone()
 
     if not record:
+        return None
+
+    expiry = record["expires_at"]
+    
+    if hasattr(expiry, "date"):
+        expiry = expiry.date()
+
+    if expiry < date.today():
         return None
 
     update_sql = """

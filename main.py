@@ -9,10 +9,10 @@ from pwdlib.hashers.bcrypt import BcryptHasher
 from fastapi.responses import RedirectResponse
 import pymysql
 
-from models import UserCreate, UrlCreate, UrlResponse
+from schemas import UserCreate, UrlCreate, UrlResponse
 from database import get_db_connection
 
-from models import(
+from schemas import(
     UserCreate,
     UserResponse,
     UrlCreate,
@@ -68,22 +68,30 @@ def shorten_url(payload: UrlCreate,
     try:
         with db.cursor() as cursor:
             user_id = current_user["user_id"] if current_user else None
+            if user_id is None and payload.expires_at is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Login to set an expiry date. Guest links expires after 1 month"
+                )
             if user_id is not None:
                 existing_record = services.get_existing_url(cursor, payload.original_url, user_id)
                 if existing_record:
                     return UrlResponse(
                         original_url= payload.original_url,
                         shortened_url= existing_record["shortened_url"],
+                        expires_at= existing_record["expires_at"]
                     )
+        
 
-            
-
-            short_code = services.insert_short_url(cursor, payload.original_url, user_id)
+            short_code, expires_at = services.insert_short_url(
+                cursor, payload.original_url, user_id, custom_expiry=payload.expires_at
+            )
             db.commit()
 
             return UrlResponse(
                 original_url= payload.original_url,
                 shortened_url= short_code,
+                expires_at=expires_at,
             )
 
     except pymysql.MySQLError as e:
